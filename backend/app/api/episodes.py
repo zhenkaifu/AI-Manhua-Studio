@@ -40,7 +40,7 @@ async def generate_episode(
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=f"AI 输出不符合剧本结构：{e.errors()}")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"调用本地模型失败：{e}")
+        raise HTTPException(status_code=502, detail=f"调用配置的 AI 模型失败：{e}")
 
     return episode_service.save_episode(db, project_id, episode_data, json_payload=raw)
 

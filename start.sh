@@ -2,6 +2,12 @@
 # AI Manhua Studio 一键启动
 cd "$(dirname "$0")"
 
+set -a
+if [ -f backend/.env ]; then
+    source backend/.env
+fi
+set +a
+
 echo "🚀 启动后端 (FastAPI, 端口 8000)..."
 cd backend
 nohup .venv/bin/python main.py > /tmp/manhua_backend.log 2>&1 &

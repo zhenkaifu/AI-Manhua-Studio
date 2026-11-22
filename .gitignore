@@ -31,5 +31,6 @@ ComfyUI/user/
 # Local configuration and secrets
 .env
 .env.*
+backend/.env
 *.pem
 *.key

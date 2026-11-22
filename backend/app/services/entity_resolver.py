@@ -27,7 +27,7 @@ def _exact_match(name: str, aliases: list[str], existing: list[dict]) -> dict | 
 
 
 async def _semantic_match(kind: str, item: dict, existing: list[dict]) -> dict | None:
-    """Level 2：让 Qwen3 做语义判断。失败时返回 None（视为新实体）。"""
+    """Level 2：让配置的 LLM 做语义判断。失败时返回 None（视为新实体）。"""
     if not existing:
         return None
     try:

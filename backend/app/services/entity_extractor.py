@@ -45,7 +45,7 @@ JSON 结构严格如下：
 
 
 async def extract_entities(novel: str) -> dict:
-    """用 Qwen3 从小说提取角色和场景，返回 {"characters": [...], "scenes": [...]}。"""
+    """用配置的 LLM 从小说提取角色和场景，返回 {"characters": [...], "scenes": [...]}。"""
     result = await chat_json(
         EXTRACT_PROMPT,
         "请从以下小说片段中提取角色和场景：\n\n" + novel,

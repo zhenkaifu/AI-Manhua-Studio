@@ -108,7 +108,7 @@ async def generate(request: NovelRequest):
             detail="AI 返回的内容不是合法 JSON，请重试",
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"调用本地模型失败：{e}")
+        raise HTTPException(status_code=502, detail=f"调用配置的 AI 模型失败：{e}")
 
     try:
         episode = Episode(**raw)
