@@ -1,0 +1,35 @@
+.DS_Store
+*.py[cod]
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# JavaScript dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python environments
+.venv/
+**/.venv/
+venv/
+**/venv/
+
+# Runtime data and generated output
+data/database/
+data/projects/
+output/
+novels/
+
+# ComfyUI runtime assets
+ComfyUI/models/
+ComfyUI/input/
+ComfyUI/output/
+ComfyUI/temp/
+ComfyUI/user/
+
+# Local configuration and secrets
+.env
+.env.*
+*.pem
+*.key
