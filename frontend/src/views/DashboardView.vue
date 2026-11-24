@@ -94,7 +94,7 @@ onMounted(load);
         <div class="modal-heading"><div><p class="overline">NEW PRODUCTION</p><h2>创建漫剧项目</h2></div><button type="button" class="icon-btn" @click="showCreate = false">×</button></div>
         <label>项目名称<input v-model="form.name" autofocus required placeholder="例如：修仙传 · 第一季" /></label>
         <label>项目简介<textarea v-model="form.description" placeholder="简要记录故事题材和制作目标（选填）"></textarea></label>
-        <label>视觉风格<select v-model="form.visual_style"><option>Chinese 2.5D Donghua</option><option>Chinese 2D Anime</option><option>Cinematic Fantasy Animation</option></select></label>
+        <label>视觉风格<select v-model="form.visual_style"><option value="Chinese 2.5D Donghua">2.5D 国漫</option><option value="Chinese 2D Anime">2D 国漫</option><option value="Cinematic Fantasy Animation">电影感幻想动画</option><option value="Modern Manhua Flat Color">现代平涂漫画</option><option value="Chinese Ink Wash">东方水墨</option></select></label>
         <p class="form-note">创建后可在第一阶段粘贴小说或上传 TXT、DOCX、EPUB 文件。</p>
         <div class="modal-actions"><button type="button" class="btn secondary" @click="showCreate = false">取消</button><button class="btn primary" :disabled="creating || !form.name.trim()">{{ creating ? '创建中…' : '创建并开始' }}</button></div>
       </form>

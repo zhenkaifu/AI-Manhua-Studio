@@ -120,6 +120,7 @@ class ComfyUIProvider(ImageProvider):
         self, prompt: str, negative_prompt: str, seed: int,
         width: int, height: int, steps: int, upscale: int = 1,
         reference_path=None, reference_paths=None, progress_callback=None,
+        cancel_callback=None,
     ) -> bytes:
         # 兼容旧的单张 reference_path 用法
         paths = list(reference_paths or [])
@@ -189,6 +190,11 @@ class ComfyUIProvider(ImageProvider):
                 while waited < MAX_WAIT_SECONDS:
                     await asyncio.sleep(3)
                     waited += 3
+                    if cancel_callback and cancel_callback():
+                        # 同时处理正在采样和仍在 ComfyUI 内部排队的情况。
+                        await client.post(BASE_URL + "/interrupt")
+                        await client.post(BASE_URL + "/queue", json={"delete": [prompt_id]})
+                        raise RuntimeError("GENERATION_CANCELLED_BY_USER")
                     h = await client.get(BASE_URL + f"/history/{prompt_id}")
                     history = h.json()
                     if prompt_id not in history:

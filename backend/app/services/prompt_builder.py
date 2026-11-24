@@ -3,10 +3,45 @@
 结构：Global Style + Character + Scene + Shot + Camera，与 Stage 3 文档一致。
 """
 
-GLOBAL_STYLE = (
-    "Chinese 2.5D donghua style, cinematic fantasy animation, "
-    "3D-rendered anime aesthetic, masterpiece, best quality, highly detailed"
-)
+VISUAL_STYLES = {
+    "Chinese 2.5D Donghua": {
+        "label": "2.5D 国漫",
+        "prompt": "Chinese 2.5D donghua style, cinematic fantasy animation, refined 3D-rendered anime aesthetic, consistent character design, masterpiece, highly detailed",
+        "negative": "flat 2D cartoon, western comic style, chibi",
+    },
+    "Chinese 2D Anime": {
+        "label": "2D 国漫",
+        "prompt": "Chinese 2D donghua, hand-drawn anime illustration, clean expressive line art, cel shading, consistent character design, cinematic composition, highly detailed",
+        "negative": "3d render, 2.5d, photorealistic, western cartoon, chibi",
+    },
+    "Cinematic Fantasy Animation": {
+        "label": "电影感幻想动画",
+        "prompt": "cinematic fantasy animation, consistent production design, atmospheric depth, dramatic film lighting, detailed painterly animation still",
+        "negative": "flat children's cartoon, chibi, live action photography",
+    },
+    "Modern Manhua Flat Color": {
+        "label": "现代平涂漫画",
+        "prompt": "modern Chinese manhua illustration, clean ink contours, flat colors, crisp cel shadows, graphic comic composition, consistent character design",
+        "negative": "3d render, 2.5d, photorealistic, painterly oil texture",
+    },
+    "Chinese Ink Wash": {
+        "label": "东方水墨",
+        "prompt": "Chinese ink wash animation, elegant brushwork, mineral pigments, atmospheric rice paper texture, poetic negative space, consistent character design",
+        "negative": "3d render, glossy plastic, western cartoon, neon colors",
+    },
+}
+
+DEFAULT_STYLE = "Chinese 2.5D Donghua"
+GLOBAL_STYLE = VISUAL_STYLES[DEFAULT_STYLE]["prompt"]
+
+
+def style_settings(value: str | None) -> dict:
+    return VISUAL_STYLES.get(value or DEFAULT_STYLE, VISUAL_STYLES[DEFAULT_STYLE])
+
+
+def with_style(prompt: str, visual_style: str | None) -> str:
+    style = style_settings(visual_style)["prompt"]
+    return prompt if style in prompt else f"{style},\n{prompt}"
 
 NEGATIVE_BASE = (
     "lowres, bad anatomy, bad hands, bad eyes, deformed face, asymmetrical eyes, "
@@ -22,9 +57,10 @@ CAMERA_EN = {
 }
 
 
-def build_prompt(context: dict) -> tuple[str, str]:
-    """输入 entity_linker.generation_context 的输出，返回 (prompt, negative)。"""
-    parts = [GLOBAL_STYLE]
+def build_prompt(context: dict, visual_style: str | None = None) -> tuple[str, str]:
+    """输入 generation-context，使用当前项目风格构建 (prompt, negative)。"""
+    style = style_settings(visual_style)
+    parts = [style["prompt"]]
 
     for c in context.get("characters", []):
         if c.get("visual_prompt"):
@@ -55,7 +91,7 @@ def build_prompt(context: dict) -> tuple[str, str]:
 
     prompt = ",\n".join(p for p in parts if p)
 
-    negatives = [NEGATIVE_BASE]
+    negatives = [NEGATIVE_BASE, style["negative"]]
     for c in context.get("characters", []):
         if c.get("negative_prompt"):
             negatives.append(c["negative_prompt"])

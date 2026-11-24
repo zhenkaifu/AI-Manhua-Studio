@@ -94,6 +94,13 @@ export const api = {
     json("POST", `/episodes/${eid}/generate-all`, data),
   generateCharacter: (id) => req(`/characters/${id}/generate`, { method: "POST" }),
   generateScene: (id) => req(`/scenes/${id}/generate`, { method: "POST" }),
+  listProps: (pid) => req(`/projects/${pid}/props`),
+  createProp: (pid, data) => json("POST", `/projects/${pid}/props`, data),
+  updateProp: (id, data) => json("PUT", `/props/${id}`, data),
+  deleteProp: (id) => req(`/props/${id}`, { method: "DELETE" }),
+  generateProp: (id) => req(`/props/${id}/generate`, { method: "POST" }),
+  extractAssetsFromScripts: (pid) => req(`/projects/${pid}/assets/extract-from-scripts`, { method: "POST" }),
+  generateMissingAssets: (pid) => req(`/projects/${pid}/assets/generate-missing`, { method: "POST" }),
   gallery: (eid) => req(`/episodes/${eid}/gallery`),
   listJobs: (pid, status) =>
     req(`/projects/${pid}/generation-jobs${status ? `?status=${status}` : ""}`),
@@ -120,6 +127,14 @@ export const api = {
   uploadNovel: (pid, file) => {
     const fd = new FormData(); fd.append("file", file);
     return req(`/projects/${pid}/novel/import`, { method: "POST", body: fd });
+  },
+  uploadStoryBible: (pid, file) => {
+    const fd = new FormData(); fd.append("file", file);
+    return req(`/projects/${pid}/story-bible/import`, { method: "POST", body: fd });
+  },
+  uploadMajorEvents: (pid, file) => {
+    const fd = new FormData(); fd.append("file", file);
+    return req(`/projects/${pid}/episode-plan/import`, { method: "POST", body: fd });
   },
   revisions: (stateId) => req(`/production-states/${stateId}/revisions`),
   updateShotProduction: (sid, data) => json("PUT", `/shots/${sid}/production`, data),

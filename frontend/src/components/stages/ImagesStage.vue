@@ -15,7 +15,7 @@ async function save() {
       selected_image_id: shot.images.find(image => image.is_selected)?.id || null,
     })),
   };
-  return api.saveStage(props.projectId, 6, content, props.episodeId);
+  return api.saveStage(props.projectId, 7, content, props.episodeId);
 }
 defineExpose({ save });
 </script>

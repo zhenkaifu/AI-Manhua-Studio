@@ -18,7 +18,7 @@ async function load() {
 async function save() {
   if (!props.episodeId) throw new Error('请选择剧集');
   const latest = await api.readiness(props.episodeId);
-  return api.saveStage(props.projectId, 7, { readiness: latest, package_episode_id: props.episodeId }, props.episodeId);
+  return api.saveStage(props.projectId, 8, { readiness: latest, package_episode_id: props.episodeId }, props.episodeId);
 }
 function download() {
   const link = document.createElement('a'); link.href = api.productionPackageUrl(props.episodeId); link.download = ''; document.body.appendChild(link); link.click(); link.remove();

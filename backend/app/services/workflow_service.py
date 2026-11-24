@@ -18,13 +18,14 @@ from app.database.models import (
 )
 
 STAGES = {
-    1: "小说分析",
+    1: "故事设定",
     2: "剧集规划",
-    3: "剧本制作",
-    4: "资产管理",
-    5: "分镜制作",
-    6: "图像生成与审核",
-    7: "视频制作就绪",
+    3: "小说章节",
+    4: "剧本制作",
+    5: "资产管理",
+    6: "分镜制作",
+    7: "图像生成与审核",
+    8: "视频制作就绪",
 }
 ACTIVE_STATES = {"IN_PROGRESS", "AI_GENERATING", "REVIEW_REQUIRED", "NEEDS_REVISION", "FAILED"}
 
@@ -114,7 +115,7 @@ def invalidate_downstream(db: Session, project_id: str, stage: int, episode_id: 
             downstream.status = "NEEDS_REVISION"
         downstream.outdated = True
         downstream.approved_at = None
-    if stage in (3, 5) and episode_id:
+    if stage in (4, 6) and episode_id:
         for shot in db.query(Shot).filter(Shot.episode_id == episode_id).all():
             shot.production_outdated = True
 
@@ -147,7 +148,7 @@ def save_content(
         project.last_active_episode_id = episode_id
     db.commit()
     db.refresh(state)
-    if stage > 3:
+    if stage > 4:
         global_state = get_state(db, project_id, stage)
         if global_state.status == "APPROVED":
             global_state.status = "NEEDS_REVISION"
@@ -183,11 +184,11 @@ def approve(db: Session, project_id: str, stage: int, episode_id: str | None = N
             project_id=project_id, episode_id=item.episode_id, stage=stage,
             version=item.version, note=note,
         ))
-    next_state = get_state(db, project_id, min(7, stage + 1)) if stage < 7 else None
+    next_state = get_state(db, project_id, min(8, stage + 1)) if stage < 8 else None
     if next_state and next_state.status == "NOT_STARTED":
         next_state.status = "IN_PROGRESS"
     project = get_project(db, project_id)
-    project.current_stage = min(7, stage + 1)
+    project.current_stage = min(8, stage + 1)
     project.updated_at = utcnow()
     if episode_id:
         project.last_active_episode_id = episode_id
@@ -231,8 +232,8 @@ def project_summary(db: Session, project: Project) -> dict:
         "current_stage": project.current_stage,
         "current_stage_name": STAGES[project.current_stage],
         "last_completed_stage": max(approved) if approved else 0,
-        "status": "已完成制作准备" if 7 in approved else ("制作中" if states else "尚未开始"),
-        "progress": round(len(set(approved)) / 7 * 100),
+        "status": "已完成制作准备" if 8 in approved else ("制作中" if states else "尚未开始"),
+        "progress": round(len(set(approved)) / 8 * 100),
         "episode_count": db.query(Episode).filter(Episode.project_id == project.id).count(),
         "character_count": db.query(Character).filter(Character.project_id == project.id).count(),
         "scene_count": db.query(Scene).filter(Scene.project_id == project.id).count(),

@@ -52,6 +52,13 @@ async function remove(c) {
   load();
 }
 
+async function cancel(job) {
+  busyId.value = job.id;
+  try { await api.cancelJob(job.id); notice.value = `已停止「${job.target_name}」生成任务。`; await load(); }
+  catch (e) { error.value = e.message; }
+  finally { busyId.value = ""; }
+}
+
 async function onSaved() { showEditor.value = false; await load(); }
 
 onMounted(() => {
@@ -83,8 +90,9 @@ onBeforeUnmount(() => clearInterval(pollTimer));
       :key="c.id"
       :character="c"
       :job="jobFor(c.id)"
-      :busy="busyId === c.id"
+      :busy="busyId === c.id || busyId === jobFor(c.id)?.id"
       @generate="generate"
+      @cancel="cancel"
       @edit="openEdit"
       @delete="remove"
     />

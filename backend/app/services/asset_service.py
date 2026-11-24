@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.paths import DATA_DIR, PROJECTS_DIR
-from app.database.models import Asset, Character, Scene
+from app.database.models import Asset, Character, Prop, Scene
 
 EXT_BY_MIME = {
     "image/png": ".png",
@@ -125,6 +125,9 @@ def delete_asset(db: Session, asset_id: str) -> dict:
         {"reference_asset_id": None}
     )
     db.query(Scene).filter(Scene.reference_asset_id == asset_id).update(
+        {"reference_asset_id": None}
+    )
+    db.query(Prop).filter(Prop.reference_asset_id == asset_id).update(
         {"reference_asset_id": None}
     )
     path = DATA_DIR / a.file_path

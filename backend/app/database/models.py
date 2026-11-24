@@ -106,6 +106,21 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Prop(Base):
+    __tablename__ = "props"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: generate_id("prop"))
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    narrative_significance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    visual_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_asset_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("assets.id", use_alter=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class Extraction(Base):
     """AI 从小说提取的角色/场景草稿，确认后才写入正式表。"""
 

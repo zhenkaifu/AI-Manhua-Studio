@@ -15,6 +15,8 @@ from app.database.models import (
     Character,
     Episode,
     GenerationJob,
+    Prop,
+    Project,
     Scene,
     Shot,
     ShotImage,
@@ -28,6 +30,15 @@ DEFAULT_STEPS = 6
 DEFAULT_VARIATIONS = 2
 
 
+class GenerationCancelled(Exception):
+    """用户主动停止，不作为失败任务自动重试。"""
+
+
+def _project_style(db: Session, project_id: str) -> str:
+    project = db.get(Project, project_id)
+    return project.visual_style if project else prompt_builder.DEFAULT_STYLE
+
+
 def _job_out(j: GenerationJob, db: Session | None = None) -> dict:
     target_name = None
     if db:
@@ -37,6 +48,9 @@ def _job_out(j: GenerationJob, db: Session | None = None) -> dict:
         elif j.target_type == "scene":
             target = db.get(Scene, j.target_id)
             target_name = target.name if target else "已删除场景"
+        elif j.target_type == "prop":
+            target = db.get(Prop, j.target_id)
+            target_name = target.name if target else "已删除道具"
         else:
             target = db.get(Shot, j.shot_id)
             target_name = f"镜头 {target.shot_index}" if target else "分镜"
@@ -124,7 +138,8 @@ def create_job_for_shot(
         raise HTTPException(status_code=409, detail="该分镜已有进行中的生成任务")
 
     context = entity_linker.generation_context(db, shot_id)
-    prompt, negative = prompt_builder.build_prompt(context)
+    visual_style = _project_style(db, episode.project_id)
+    prompt, negative = prompt_builder.build_prompt(context, visual_style)
 
     job = GenerationJob(
         project_id=episode.project_id,
@@ -154,13 +169,13 @@ def create_job_for_shot(
 def create_job_for_entity(
     db: Session, entity_type: str, entity_id: str
 ) -> dict:
-    """从角色或场景档案创建参考图任务，完成后自动回填参考图。"""
-    if entity_type not in ("character", "scene"):
+    """从角色、场景或道具档案创建参考图任务，完成后自动回填参考图。"""
+    if entity_type not in ("character", "scene", "prop"):
         raise HTTPException(status_code=400, detail="不支持的生成类型")
-    model = Character if entity_type == "character" else Scene
+    model = {"character": Character, "scene": Scene, "prop": Prop}[entity_type]
     entity = db.get(model, entity_id)
     if not entity:
-        raise HTTPException(status_code=404, detail="角色不存在" if entity_type == "character" else "场景不存在")
+        raise HTTPException(status_code=404, detail="资产档案不存在")
     existing = (
         db.query(GenerationJob)
         .filter(
@@ -173,38 +188,42 @@ def create_job_for_entity(
     if existing:
         raise HTTPException(status_code=409, detail="该档案已有进行中的生成任务")
 
+    visual_style = _project_style(db, entity.project_id)
+    style = prompt_builder.style_settings(visual_style)
     if entity_type == "character":
         details = [
-            entity.visual_prompt,
-            entity.age_description,
-            entity.appearance,
-            entity.hairstyle,
-            entity.clothing,
+            entity.visual_prompt, entity.age_description, entity.appearance,
+            entity.hairstyle, entity.clothing,
         ]
-        prompt = (
-            "Chinese 2.5D donghua character reference sheet, single character, "
-            "full body, clean neutral studio background, front view, expressive face, "
-            "highly detailed character design. "
-            + ". ".join(x.strip() for x in details if x and x.strip())
+        subject = (
+            "character reference sheet, single character, full body, clean neutral "
+            "studio background, front view, expressive face, highly detailed character design"
         )
         negative = entity.negative_prompt or (
             "multiple characters, cropped head, cropped feet, blurry, low quality, "
             "text, watermark, busy background"
         )
-    else:
+    elif entity_type == "scene":
         details = [
-            entity.visual_prompt,
-            entity.environment,
-            entity.architecture,
-            entity.lighting,
-            entity.atmosphere,
+            entity.visual_prompt, entity.environment, entity.architecture,
+            entity.lighting, entity.atmosphere,
         ]
-        prompt = (
-            "Chinese 2.5D donghua environment concept art, wide establishing shot, "
-            "no people, coherent architecture, cinematic lighting, highly detailed. "
-            + ". ".join(x.strip() for x in details if x and x.strip())
+        subject = (
+            "environment concept art, wide establishing shot, no people, coherent "
+            "architecture, cinematic lighting, highly detailed"
         )
         negative = "people, character, blurry, low quality, text, watermark, distorted architecture"
+    else:
+        details = [entity.visual_prompt, entity.description, entity.narrative_significance]
+        subject = (
+            "prop design reference, single object, centered, full object visible, "
+            "clean neutral studio background, highly detailed materials"
+        )
+        negative = "people, character, multiple objects, cropped object, blurry, text, watermark, busy background"
+    prompt = style["prompt"] + ",\n" + subject + ". " + ". ".join(
+        x.strip() for x in details if x and x.strip()
+    )
+    negative = negative + ", " + style["negative"]
 
     job = GenerationJob(
         project_id=entity.project_id,
@@ -255,10 +274,12 @@ def create_jobs_for_episode(
 
 def cancel_job(db: Session, job_id: str) -> dict:
     job = get_job(db, job_id)
-    if job.status not in ("pending",):
-        raise HTTPException(status_code=400, detail="只有排队中的任务可以取消")
+    if job.status not in ("pending", "running"):
+        raise HTTPException(status_code=400, detail="该任务已结束，无法取消")
+    was_running = job.status == "running"
     job.status = "cancelled"
-    job.progress_message = "已取消"
+    job.progress_message = "正在停止 ComfyUI 生成" if was_running else "已取消排队"
+    job.error_message = None
     job.completed_at = datetime.now(timezone.utc)
     db.commit()
     return _job_out(job, db)
@@ -440,12 +461,15 @@ def episode_gallery(db: Session, episode_id: str) -> dict:
 def get_shot_prompt(db: Session, shot_id: str) -> dict:
     """返回分镜当前生效的 Prompt（自定义优先）和由档案构建的原始 Prompt。"""
     shot = get_shot(db, shot_id)
+    episode = db.get(Episode, shot.episode_id)
+    visual_style = _project_style(db, episode.project_id)
+    style = prompt_builder.style_settings(visual_style)
     context = entity_linker.generation_context(db, shot_id)
-    built_prompt, built_negative = prompt_builder.build_prompt(context)
+    built_prompt, built_negative = prompt_builder.build_prompt(context, visual_style)
     return {
         "shot_id": shot_id,
-        "prompt": shot.custom_prompt or built_prompt,
-        "negative_prompt": shot.custom_negative_prompt or built_negative,
+        "prompt": prompt_builder.with_style(shot.custom_prompt, visual_style) if shot.custom_prompt else built_prompt,
+        "negative_prompt": (shot.custom_negative_prompt + ", " + style["negative"]) if shot.custom_negative_prompt else built_negative,
         "built_prompt": built_prompt,
         "built_negative_prompt": built_negative,
         "is_custom": bool(shot.custom_prompt),
@@ -497,8 +521,12 @@ def regenerate_shot(
 
     # Prompt 优先级：显式传入 > 已保存的自定义 > 档案构建
     prompts = get_shot_prompt(db, shot_id)
-    final_prompt = (prompt or "").strip() or prompts["prompt"]
+    visual_style = _project_style(db, episode.project_id)
+    style = prompt_builder.style_settings(visual_style)
+    final_prompt = prompt_builder.with_style((prompt or "").strip() or prompts["prompt"], visual_style)
     final_negative = (negative_prompt or "").strip() or prompts["negative_prompt"]
+    if style["negative"] not in final_negative:
+        final_negative += ", " + style["negative"]
 
     # 参考图覆盖：验证每个 ID 存在且文件未丢失
     ref_override = None
@@ -615,7 +643,7 @@ def _save_entity_reference(
     db: Session, job: GenerationJob, data: bytes, filename: str
 ) -> Asset:
     """保存档案生成图并设为当前参考图，旧资产仍保留在资产库。"""
-    folder = "characters" if job.target_type == "character" else "scenes"
+    folder = {"character": "characters", "scene": "scenes", "prop": "props"}[job.target_type]
     rel_dir = Path("projects") / job.project_id / folder / job.target_id / "generated"
     out_dir = DATA_DIR / rel_dir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -632,7 +660,7 @@ def _save_entity_reference(
     )
     db.add(asset)
     db.flush()
-    model = Character if job.target_type == "character" else Scene
+    model = {"character": Character, "scene": Scene, "prop": Prop}[job.target_type]
     entity = db.get(model, job.target_id)
     if not entity:
         raise RuntimeError("生成期间档案已被删除，图片已保留但无法回填")
@@ -704,19 +732,32 @@ async def run_job(job_id: str, provider) -> None:
             out_dir = None
             ref_paths, char_ref_ids, scene_ref_ids = [], [], []
 
+        def is_cancelled():
+            db.expire_all()
+            current = db.get(GenerationJob, job_id)
+            return not current or current.status == "cancelled"
+
         for i in range(job.variations):
+            if is_cancelled():
+                raise GenerationCancelled()
             if i > 0:
                 job.progress = round(i / job.variations * 95)
                 job.progress_message = f"设备冷却中，准备第 {i + 1}/{job.variations} 张"
                 db.commit()
-                await asyncio.sleep(COOLDOWN_SECONDS)
+                for _ in range(COOLDOWN_SECONDS):
+                    await asyncio.sleep(1)
+                    if is_cancelled():
+                        raise GenerationCancelled()
+                db.expire_all()
+                job = db.get(GenerationJob, job_id)
             job.current_variation = i + 1
             job.progress_message = f"第 {i + 1}/{job.variations} 张 · 等待 ComfyUI"
             db.commit()
 
             async def on_progress(percent: int, message: str):
+                db.expire_all()
                 current = db.get(GenerationJob, job_id)
-                if not current:
+                if not current or current.status == "cancelled":
                     return
                 current.progress = max(
                     current.progress or 0,
@@ -731,7 +772,12 @@ async def run_job(job_id: str, provider) -> None:
                 seed, job.width, job.height, job.steps, job.upscale,
                 reference_paths=ref_paths,
                 progress_callback=on_progress,
+                cancel_callback=is_cancelled,
             )
+            if is_cancelled():
+                raise GenerationCancelled()
+            db.expire_all()
+            job = db.get(GenerationJob, job_id)
             filename = f"{'candidate' if job.target_type == 'shot' else job.target_type}_{i + 1:03d}_{seed}.png"
             if job.target_type == "shot":
                 _save_candidate(
@@ -751,7 +797,16 @@ async def run_job(job_id: str, provider) -> None:
         db.commit()
     except Exception as e:
         db.rollback()
+        db.expire_all()
         job = db.get(GenerationJob, job_id)
+        cancelled = isinstance(e, GenerationCancelled) or str(e) == "GENERATION_CANCELLED_BY_USER" or (job and job.status == "cancelled")
+        if job and cancelled:
+            job.status = "cancelled"
+            job.progress_message = "已由用户停止"
+            job.error_message = None
+            job.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return
         if job:
             job.progress_message = str(e)[:240]
             job.error_message = str(e)[:500]

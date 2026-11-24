@@ -17,7 +17,7 @@ const STATUS = {
   failed: "失败",
   cancelled: "已取消",
 };
-const TYPE = { shot: "分镜", character: "角色", scene: "场景" };
+const TYPE = { shot: "分镜", character: "角色", scene: "场景", prop: "道具" };
 const activeJobs = computed(() => jobs.value.filter((j) => ["pending", "running"].includes(j.status)));
 const historyJobs = computed(() => jobs.value.filter((j) => !["pending", "running"].includes(j.status)));
 const visibleJobs = computed(() => tab.value === "active" ? activeJobs.value : jobs.value);
@@ -130,7 +130,7 @@ onBeforeUnmount(() => clearInterval(timer));
         </div>
 
         <div class="job-actions">
-          <button v-if="job.status === 'pending'" class="ghost" :disabled="busyId === job.id" @click="cancel(job)">取消</button>
+          <button v-if="['pending', 'running'].includes(job.status)" class="ghost" :disabled="busyId === job.id" @click="cancel(job)">{{ busyId === job.id ? '正在停止…' : job.status === 'running' ? '停止生成' : '取消排队' }}</button>
           <button v-if="['failed', 'cancelled'].includes(job.status)" class="ghost" :disabled="busyId === job.id" @click="retry(job)">重新排队</button>
         </div>
       </article>

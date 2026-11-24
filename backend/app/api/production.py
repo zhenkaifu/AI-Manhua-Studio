@@ -41,14 +41,14 @@ def read_novel_upload(file: UploadFile) -> str:
     suffix = Path(file.filename or "").suffix.lower()
     data = file.file.read()
     if len(data) > 30 * 1024 * 1024:
-        raise ValueError("小说文件不能超过 30 MB")
-    if suffix == ".txt":
+        raise ValueError("文档不能超过 30 MB")
+    if suffix in (".txt", ".md"):
         for encoding in ("utf-8-sig", "gb18030", "utf-16"):
             try:
                 return data.decode(encoding)
             except UnicodeDecodeError:
                 continue
-        raise ValueError("TXT 编码无法识别")
+        raise ValueError("TXT / Markdown 编码无法识别")
     if suffix == ".docx":
         with zipfile.ZipFile(__import__("io").BytesIO(data)) as archive:
             root = ElementTree.fromstring(archive.read("word/document.xml"))
@@ -62,7 +62,11 @@ def read_novel_upload(file: UploadFile) -> str:
                     parser.feed(archive.read(name).decode("utf-8", errors="ignore"))
                     parts.extend(parser.parts)
         return "\n\n".join(parts)
-    raise ValueError("仅支持 TXT、DOCX、EPUB")
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+        reader = PdfReader(__import__("io").BytesIO(data))
+        return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+    raise ValueError("仅支持 TXT、Markdown、DOCX、EPUB、PDF")
 
 
 @router.get("/dashboard")
@@ -100,6 +104,8 @@ def save_stage(project_id: str, stage: int, content: dict = Body(...), episode_i
     workflow_service.require_unlocked(db, project_id, stage)
     if stage == 2:
         production_service.sync_plan_episodes(db, project_id, content)
+    if stage == 4 and isinstance(content.get("scenes"), list):
+        content["total_duration"] = sum(max(0, int(scene.get("duration_seconds", 0) or 0)) for scene in content["scenes"])
     return workflow_service.save_content(db, project_id, stage, content, episode_id)
 
 
@@ -119,17 +125,45 @@ def get_revisions(state_id: str, db: Session = Depends(get_db)):
     return workflow_service.revisions(db, state_id)
 
 
+@router.post("/projects/{project_id}/story-bible/import")
+async def import_story_bible_file(project_id: str, file: UploadFile, db: Session = Depends(get_db)):
+    workflow_service.require_unlocked(db, project_id, 1)
+    try:
+        text = read_novel_upload(file)
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(422, str(exc))
+    return await production_service.structure_story_document(
+        db, project_id, file.filename or "设定文档", text,
+    )
+
+
+@router.post("/projects/{project_id}/episode-plan/import")
+async def import_episode_plan_file(project_id: str, file: UploadFile, db: Session = Depends(get_db)):
+    workflow_service.require_unlocked(db, project_id, 2)
+    try:
+        text = read_novel_upload(file)
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(422, str(exc))
+    return await production_service.import_major_events_document(
+        db, project_id, file.filename or "大事件文档", text,
+    )
+
+
 @router.post("/projects/{project_id}/novel")
 def import_novel_text(project_id: str, data: NovelTextRequest, db: Session = Depends(get_db)):
+    workflow_service.require_unlocked(db, project_id, 3)
     novel = production_service.parse_novel(data.text, data.name)
     project = project_service.get_project(db, project_id)
     project.novel_name = data.name
     db.commit()
-    return workflow_service.save_content(db, project_id, 1, {"novel": novel}, note="导入小说")
+    return workflow_service.save_content(db, project_id, 3, {"novel": novel}, note="导入小说")
 
 
 @router.post("/projects/{project_id}/novel/import")
 async def import_novel_file(project_id: str, file: UploadFile, db: Session = Depends(get_db)):
+    workflow_service.require_unlocked(db, project_id, 3)
     try:
         text = read_novel_upload(file)
     except Exception as exc:
@@ -140,7 +174,7 @@ async def import_novel_file(project_id: str, file: UploadFile, db: Session = Dep
     project = project_service.get_project(db, project_id)
     project.novel_name = name
     db.commit()
-    return workflow_service.save_content(db, project_id, 1, {"novel": novel}, note="上传小说文件")
+    return workflow_service.save_content(db, project_id, 3, {"novel": novel}, note="上传小说文件")
 
 
 @router.post("/projects/{project_id}/workflow/{stage}/generate")
@@ -149,12 +183,12 @@ async def generate_stage(project_id: str, stage: int, episode_id: str | None = N
         return await production_service.analyze_story(db, project_id)
     if stage == 2:
         return await production_service.generate_episode_plan(db, project_id)
-    if stage == 3:
+    if stage == 4:
         if not episode_id:
             from fastapi import HTTPException
             raise HTTPException(400, "请选择剧集")
         return await production_service.generate_script(db, project_id, episode_id)
-    if stage == 5:
+    if stage == 6:
         if not episode_id:
             from fastapi import HTTPException
             raise HTTPException(400, "请选择剧集")
@@ -165,14 +199,24 @@ async def generate_stage(project_id: str, stage: int, episode_id: str | None = N
 
 @router.post("/projects/{project_id}/workflow/{stage}/review")
 async def review_stage(project_id: str, stage: int, episode_id: str | None = None, db: Session = Depends(get_db)):
-    if stage in (3, 5):
+    if stage in (4, 6):
         return await production_service.review_content(db, project_id, stage, episode_id)
-    if stage == 4:
-        return production_service.asset_quality(db, project_id)
     if stage == 5:
+        return production_service.asset_quality(db, project_id)
+    if stage == 6:
         return production_service.storyboard_quality(db, episode_id)
     from fastapi import HTTPException
     raise HTTPException(400, "该阶段没有 AI 审阅操作")
+
+
+@router.post("/projects/{project_id}/assets/extract-from-scripts")
+async def extract_assets_from_scripts(project_id: str, db: Session = Depends(get_db)):
+    return await production_service.extract_assets_from_scripts(db, project_id)
+
+
+@router.post("/projects/{project_id}/assets/generate-missing")
+def generate_missing_assets(project_id: str, db: Session = Depends(get_db)):
+    return production_service.generate_missing_asset_images(db, project_id)
 
 
 @router.get("/episodes/{episode_id}/storyboard-quality")

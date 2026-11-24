@@ -2,8 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api } from '../services/api';
 import SvgIcon from '../components/SvgIcon.vue';
-import NovelStage from '../components/stages/NovelStage.vue';
+import StoryBibleStage from '../components/stages/StoryBibleStage.vue';
 import PlanningStage from '../components/stages/PlanningStage.vue';
+import ChaptersStage from '../components/stages/ChaptersStage.vue';
 import ScriptStage from '../components/stages/ScriptStage.vue';
 import AssetsStage from '../components/stages/AssetsStage.vue';
 import StoryboardStage from '../components/stages/StoryboardStage.vue';
@@ -14,18 +15,19 @@ import QueueView from './QueueView.vue';
 const props = defineProps({ projectId: { type: String, required: true }, initialStage: { type: Number, default: 1 } });
 const emit = defineEmits(['back', 'project-change']);
 const STAGES = [
-  { id: 1, name: '小说分析', short: '理解故事', icon: 'book', description: '导入小说，建立忠实于原著的 Story Bible。' },
-  { id: 2, name: '剧集规划', short: '拆分剧集', icon: 'queue', description: '规划每集主线、冲突、高光与原著章节映射。' },
-  { id: 3, name: '剧本制作', short: '场景剧本', icon: 'edit', description: '逐集编写场景级剧本，保留原著对照和内容版本。' },
-  { id: 4, name: '资产管理', short: '统一视觉', icon: 'users', description: '管理角色、场景与重要道具，统一参考图和视觉设定。' },
-  { id: 5, name: '分镜制作', short: '镜头语言', icon: 'grid', description: '把已审批剧本转为可编辑镜头，并关联已有视觉资产。' },
-  { id: 6, name: '图像生成与审核', short: '生成定稿', icon: 'image', description: '生成候选图、比较版本，由你逐镜头选择最终画面。' },
-  { id: 7, name: '视频制作就绪', short: '整理交付', icon: 'check', description: '检查交付完整性，导出供视频制作使用的 JSON 制作包。' },
+  { id: 1, name: '故事设定', short: 'Story Bible', icon: 'edit', description: '由你定义题材、主角、核心爽点与故事走向，AI 提供可编辑建议。' },
+  { id: 2, name: '剧集规划', short: '拆分剧集', icon: 'queue', description: '依据已审批的故事设定，规划每集主线、冲突、高光与结尾。' },
+  { id: 3, name: '小说章节', short: '原著管理', icon: 'book', description: '导入并管理项目小说，逐章编辑、排序、拆分与合并。' },
+  { id: 4, name: '剧本制作', short: '小说改编', icon: 'edit', description: '尽可能保留原著情节、动机、伏笔和台词，改编为完整可表演的场景剧本。' },
+  { id: 5, name: '资产管理', short: '统一视觉', icon: 'users', description: '管理角色、场景与重要道具，统一参考图和视觉设定。' },
+  { id: 6, name: '分镜制作', short: '镜头语言', icon: 'grid', description: '把已审批剧本转为可编辑镜头，并关联已有视觉资产。' },
+  { id: 7, name: '图像生成与审核', short: '生成定稿', icon: 'image', description: '生成候选图、比较版本，由你逐镜头选择最终画面。' },
+  { id: 8, name: '视频制作就绪', short: '整理交付', icon: 'check', description: '检查交付完整性，导出供视频制作使用的 JSON 制作包。' },
 ];
 const STATUS = { NOT_STARTED: '未开始', IN_PROGRESS: '制作中', AI_GENERATING: 'AI 生成中', REVIEW_REQUIRED: '待人工审批', APPROVED: '已审批', NEEDS_REVISION: '需要修订', FAILED: '生成失败' };
 const workflow = ref(null); const project = ref(null); const episodes = ref([]); const currentStage = ref(1); const currentEpisodeId = ref(''); const stageData = ref(null); const loading = ref(true); const stageLoading = ref(false); const busy = ref(false); const error = ref(''); const notice = ref(''); const stageRef = ref(null); const queueOpen = ref(false); const activeCount = ref(0); const mobileSteps = ref(false);
 let queueTimer = null;
-const episodeScoped = computed(() => [3, 5, 6, 7].includes(currentStage.value));
+const episodeScoped = computed(() => [4, 6, 7, 8].includes(currentStage.value));
 const activeMeta = computed(() => STAGES[currentStage.value - 1]);
 const activeState = computed(() => stageData.value?.episode_state || stageData.value);
 const currentEpisode = computed(() => episodes.value.find(e => e.id === currentEpisodeId.value));
@@ -87,7 +89,7 @@ async function approve() {
     const approvedName = activeMeta.value.name;
     await refresh();
     notice.value = `「${approvedName}」已通过人工审批。`;
-    if (currentStage.value < 7) await openStage(currentStage.value + 1);
+    if (currentStage.value < 8) await openStage(currentStage.value + 1);
   } catch (e) { error.value = e.message; }
   finally { busy.value = false; }
 }
@@ -117,7 +119,7 @@ onBeforeUnmount(() => clearInterval(queueTimer));
     <div class="mobile-stage-select"><button @click="mobileSteps = !mobileSteps"><span>{{ String(currentStage).padStart(2, '0') }} · {{ activeMeta.name }}</span><SvgIcon name="chevron" :size="16" /></button></div>
     <div class="workspace-body">
       <aside class="stage-sidebar" :class="{ open: mobileSteps }">
-        <div class="sidebar-caption">制作流程 <span>7 STAGES</span></div>
+        <div class="sidebar-caption">制作流程 <span>8 STAGES</span></div>
         <nav>
           <button v-for="stage in STAGES" :key="stage.id" class="stage-nav-item" :class="{ active: currentStage === stage.id, locked: !stageStates[stage.id - 1]?.unlocked }" @click="openStage(stage.id)">
             <span class="stage-number"><SvgIcon v-if="stageStates[stage.id - 1]?.status === 'APPROVED'" name="check" :size="15" /><SvgIcon v-else-if="!stageStates[stage.id - 1]?.unlocked" name="lock" :size="14" /><template v-else>{{ String(stage.id).padStart(2, '0') }}</template></span>
@@ -131,22 +133,23 @@ onBeforeUnmount(() => clearInterval(queueTimer));
       <main class="workspace-main">
         <div v-if="loading" class="workspace-loading">正在恢复上次的制作位置…</div>
         <template v-else>
-          <header class="stage-heading"><div><p>STAGE {{ String(currentStage).padStart(2, '0') }} / 07</p><h2>{{ activeMeta.name }}</h2><span>{{ activeMeta.description }}</span></div><div class="stage-state"><span v-if="activeState" class="status-chip" :class="activeState.status?.toLowerCase()">{{ STATUS[activeState.status] || activeState.status }}</span><small v-if="activeState?.version">内容版本 v{{ activeState.version }}</small></div></header>
+          <header class="stage-heading"><div><p>STAGE {{ String(currentStage).padStart(2, '0') }} / 08</p><h2>{{ activeMeta.name }}</h2><span>{{ activeMeta.description }}</span></div><div class="stage-state"><span v-if="activeState" class="status-chip" :class="activeState.status?.toLowerCase()">{{ STATUS[activeState.status] || activeState.status }}</span><small v-if="activeState?.version">内容版本 v{{ activeState.version }}</small></div></header>
           <div v-if="error" class="workspace-alert error-alert"><span>{{ error }}</span><button @click="error = ''">×</button></div>
           <div v-if="notice" class="workspace-alert notice-alert"><SvgIcon name="check" :size="17" /><span>{{ notice }}</span><button @click="notice = ''">×</button></div>
           <div v-if="activeState?.outdated" class="workspace-alert warning-alert">上游内容有更新，请复核本阶段后再审批。</div>
 
           <div class="stage-content" :class="{ refreshing: stageLoading }">
-            <NovelStage v-if="currentStage === 1" ref="stageRef" :project-id="projectId" :state="stageData" @refresh="refresh" @error="error = $event" />
+            <StoryBibleStage v-if="currentStage === 1" ref="stageRef" :project-id="projectId" :state="stageData" @refresh="refresh" @error="error = $event" />
             <PlanningStage v-else-if="currentStage === 2" ref="stageRef" :project-id="projectId" :state="stageData" @refresh="refresh" @error="error = $event" @episodes="onPlannedEpisodes" />
-            <ScriptStage v-else-if="currentStage === 3" ref="stageRef" :project-id="projectId" :state="stageData" :episode-id="currentEpisodeId" :episodes="episodes" @refresh="refresh" @error="error = $event" @select-episode="selectEpisode" />
-            <AssetsStage v-else-if="currentStage === 4" ref="stageRef" :project-id="projectId" :state="stageData" @refresh="refresh" @error="error = $event" />
-            <StoryboardStage v-else-if="currentStage === 5" ref="stageRef" :project-id="projectId" :state="stageData" :episode-id="currentEpisodeId" :episodes="episodes" @refresh="refresh" @error="error = $event" @select-episode="selectEpisode" />
-            <ImagesStage v-else-if="currentStage === 6" ref="stageRef" :project-id="projectId" :episode-id="currentEpisodeId" @select-episode="selectEpisode" />
-            <ReadyStage v-else-if="currentStage === 7" ref="stageRef" :project-id="projectId" :episode-id="currentEpisodeId" :episodes="episodes" @refresh="refresh" @error="error = $event" @select-episode="selectEpisode" />
+            <ChaptersStage v-else-if="currentStage === 3" ref="stageRef" :project-id="projectId" :state="stageData" @refresh="refresh" @error="error = $event" />
+            <ScriptStage v-else-if="currentStage === 4" ref="stageRef" :project-id="projectId" :state="stageData" :episode-id="currentEpisodeId" :episodes="episodes" @refresh="refresh" @error="error = $event" @select-episode="selectEpisode" />
+            <AssetsStage v-else-if="currentStage === 5" ref="stageRef" :project-id="projectId" :state="stageData" @refresh="refresh" @error="error = $event" />
+            <StoryboardStage v-else-if="currentStage === 6" ref="stageRef" :project-id="projectId" :state="stageData" :episode-id="currentEpisodeId" :episodes="episodes" @refresh="refresh" @error="error = $event" @select-episode="selectEpisode" />
+            <ImagesStage v-else-if="currentStage === 7" ref="stageRef" :project-id="projectId" :episode-id="currentEpisodeId" @select-episode="selectEpisode" />
+            <ReadyStage v-else-if="currentStage === 8" ref="stageRef" :project-id="projectId" :episode-id="currentEpisodeId" :episodes="episodes" @refresh="refresh" @error="error = $event" @select-episode="selectEpisode" />
           </div>
 
-          <footer class="stage-footer"><button class="btn secondary" :disabled="currentStage === 1 || busy" @click="openStage(currentStage - 1)"><SvgIcon name="back" :size="16" />上一步</button><div class="approval-actions"><button v-if="activeState?.content && Object.keys(activeState.content).length" class="text-action" :disabled="busy" @click="reject">退回修改</button><button class="btn primary approve-button" :disabled="busy || !activeState || activeState.status === 'NOT_STARTED'" @click="approve"><SvgIcon name="check" :size="17" />{{ busy ? '正在提交…' : activeState?.status === 'APPROVED' ? '重新审批并继续' : currentStage === 7 ? '审批并完成制作准备' : '审批并进入下一阶段' }}</button></div><button class="btn secondary next-button" :disabled="currentStage === 7 || busy || !stageStates[currentStage]?.unlocked" @click="openStage(currentStage + 1)">下一步<SvgIcon name="arrow" :size="16" /></button></footer>
+          <footer class="stage-footer"><button class="btn secondary" :disabled="currentStage === 1 || busy" @click="openStage(currentStage - 1)"><SvgIcon name="back" :size="16" />上一步</button><div class="approval-actions"><button v-if="activeState?.content && Object.keys(activeState.content).length" class="text-action" :disabled="busy" @click="reject">退回修改</button><button class="btn primary approve-button" :disabled="busy || !activeState || activeState.status === 'NOT_STARTED'" @click="approve"><SvgIcon name="check" :size="17" />{{ busy ? '正在提交…' : activeState?.status === 'APPROVED' ? '重新审批并继续' : currentStage === 8 ? '审批并完成制作准备' : '审批并进入下一阶段' }}</button></div><button class="btn secondary next-button" :disabled="currentStage === 8 || busy || !stageStates[currentStage]?.unlocked" @click="openStage(currentStage + 1)">下一步<SvgIcon name="arrow" :size="16" /></button></footer>
         </template>
       </main>
     </div>

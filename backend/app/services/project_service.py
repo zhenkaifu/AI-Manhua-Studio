@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.paths import DATA_DIR
 from app.database.models import (
     ApprovalRecord, Asset, Character, Episode, Extraction, GenerationJob,
-    ProductionRevision, ProductionState, Project, Scene, Shot, ShotEntityLink, ShotImage,
+    ProductionRevision, ProductionState, Project, Prop, Scene, Shot, ShotEntityLink, ShotImage,
 )
 from app.schemas.project import ProjectCreate, ProjectUpdate
 
@@ -62,6 +62,8 @@ def delete_project(db: Session, project_id: str) -> dict:
     db.query(Extraction).filter(Extraction.project_id == project_id).delete(synchronize_session=False)
     db.query(Character).filter(Character.project_id == project_id).update({"reference_asset_id": None})
     db.query(Scene).filter(Scene.project_id == project_id).update({"reference_asset_id": None})
+    db.query(Prop).filter(Prop.project_id == project_id).update({"reference_asset_id": None})
+    db.query(Prop).filter(Prop.project_id == project_id).delete(synchronize_session=False)
     db.query(Character).filter(Character.project_id == project_id).delete(synchronize_session=False)
     db.query(Scene).filter(Scene.project_id == project_id).delete(synchronize_session=False)
     db.query(Asset).filter(Asset.project_id == project_id).delete(synchronize_session=False)

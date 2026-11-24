@@ -6,7 +6,7 @@ defineProps({
   job: { type: Object, default: null },
   busy: { type: Boolean, default: false },
 });
-const emit = defineEmits(["edit", "delete", "generate"]);
+const emit = defineEmits(["edit", "delete", "generate", "cancel"]);
 </script>
 
 <template>
@@ -24,8 +24,9 @@ const emit = defineEmits(["edit", "delete", "generate"]);
     <p class="muted" v-if="character.aliases.length">别名：{{ character.aliases.join("、") }}</p>
     <p class="muted description">{{ character.appearance || "（暂无外貌描述）" }}</p>
     <div class="actions">
-      <button :disabled="busy || !!job" @click="emit('generate', character)">
-        {{ job ? '生成中' : character.reference_asset_id ? '重新生成' : '生成设定图' }}
+      <button v-if="job" class="danger" :disabled="busy" @click="emit('cancel', job)">{{ busy ? '正在停止…' : '停止生成' }}</button>
+      <button v-else :disabled="busy" @click="emit('generate', character)">
+        {{ character.reference_asset_id ? '重新生成' : '生成设定图' }}
       </button>
       <button class="ghost" @click="emit('edit', character)">编辑</button>
       <button class="danger" @click="emit('delete', character)">删除</button>

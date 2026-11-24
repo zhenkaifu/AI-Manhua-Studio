@@ -9,7 +9,7 @@ const selected = computed(() => shots.value.find(s => s.id === selectedId.value)
 async function load() { if (!props.episodeId) return; try { episode.value = await api.getEpisode(props.episodeId); shots.value = episode.value.shots; if (!selectedId.value || !shots.value.some(s => s.id === selectedId.value)) selectedId.value = shots.value[0]?.id || ''; await loadLinks(); } catch(e) { emit('error', e.message); } }
 async function loadLinks() { links.value = selectedId.value ? await api.getShotLinks(selectedId.value) : []; }
 watch(() => props.episodeId, load, { immediate: true }); watch(selectedId, loadLinks);
-async function generate() { busy.value = true; try { await api.generateStage(props.projectId, 5, props.episodeId); selectedId.value = ''; await load(); emit('refresh'); } catch(e) { emit('error', e.message); } finally { busy.value = false; } }
+async function generate() { busy.value = true; try { await api.generateStage(props.projectId, 6, props.episodeId); selectedId.value = ''; await load(); emit('refresh'); } catch(e) { emit('error', e.message); } finally { busy.value = false; } }
 async function save() { if (!selected.value) return; try { await api.updateShotProduction(selected.value.id, selected.value); await load(); } catch(e) { emit('error', e.message); throw e; } }
 async function duplicate() { if (!selected.value) return; await api.duplicateShot(selected.value.id); await load(); }
 async function move(direction) { const index = shots.value.findIndex(s => s.id === selectedId.value); const target = index + direction; if (target < 0 || target >= shots.value.length) return; const ids = shots.value.map(s => s.id); [ids[index], ids[target]] = [ids[target], ids[index]]; await api.reorderShots(props.episodeId, ids); await load(); }

@@ -18,6 +18,7 @@ from app.api import (
     image_generation,
     production,
     projects,
+    props,
     scenes,
     shots,
 )
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
         migrate_production_system,
         migrate_prompt_editing,
         migrate_shot_image_versions,
+        migrate_story_first_workflow,
     )
     result = migrate_shot_image_versions()
     if result["columns_added"] or result["versions_backfilled"]:
@@ -45,6 +47,9 @@ async def lifespan(app: FastAPI):
     production_result = migrate_production_system()
     if production_result["columns_added"]:
         print(f"[migrations] 制作工作流迁移完成: {production_result}")
+    story_first_result = migrate_story_first_workflow()
+    if not story_first_result["already_applied"]:
+        print(f"[migrations] Story Bible 优先流程迁移完成: {story_first_result}")
     generation_worker.start()
     yield
 
@@ -76,6 +81,7 @@ for router in (
     projects.router,
     characters.router,
     scenes.router,
+    props.router,
     assets.router,
     extraction.router,
     episodes.router,

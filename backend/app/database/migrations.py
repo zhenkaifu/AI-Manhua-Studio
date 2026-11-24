@@ -245,7 +245,7 @@ def migrate_generation_progress() -> dict:
 def migrate_production_system() -> dict:
     """添加项目恢复、剧集规划与阶段状态表；不修改既有图片和业务记录。"""
     from app.database.connection import Base
-    from app.database.models import ApprovalRecord, ProductionRevision, ProductionState
+    from app.database.models import ApprovalRecord, ProductionRevision, ProductionState, Prop
 
     added = []
     columns = {
@@ -275,6 +275,114 @@ def migrate_production_system() -> dict:
                     conn.execute(text(ddl))
                     added.append(f"{table}.{name}")
     Base.metadata.create_all(
-        engine, tables=[ProductionState.__table__, ProductionRevision.__table__, ApprovalRecord.__table__]
+        engine, tables=[ProductionState.__table__, ProductionRevision.__table__, ApprovalRecord.__table__, Prop.__table__]
     )
+    # 旧版本道具保存在阶段 JSON 中；首次升级时复制为可持续生成图片的资产档案。
+    import json
+    import uuid
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT DISTINCT project_id, content_json FROM production_states "
+            "WHERE stage = 5 AND episode_id IS NULL"
+        )).all()
+        for project_id, content_json in rows:
+            exists = conn.execute(text("SELECT 1 FROM props WHERE project_id = :pid LIMIT 1"), {"pid": project_id}).first()
+            if exists:
+                continue
+            try:
+                props = (json.loads(content_json or "{}").get("props") or [])
+            except json.JSONDecodeError:
+                props = []
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            for item in props:
+                conn.execute(text(
+                    "INSERT INTO props (id, project_id, name, description, narrative_significance, "
+                    "visual_prompt, reference_asset_id, status, created_at, updated_at) "
+                    "VALUES (:id, :pid, :name, :description, :significance, '', NULL, 'draft', :now, :now)"
+                ), {"id": f"prop_{uuid.uuid4().hex[:12]}", "pid": project_id, "name": item.get("name", "未命名道具"), "description": item.get("description"), "significance": item.get("narrative_significance"), "now": now})
     return {"columns_added": added}
+
+
+def migrate_story_first_workflow() -> dict:
+    """一次性把七阶段数据映射为 Story Bible 优先的八阶段流程。"""
+    import json
+    import uuid
+    from datetime import datetime, timezone
+
+    migration_name = "story_first_workflow_v1"
+    moved_states = 0
+    moved_approvals = 0
+    created_chapter_states = 0
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "name VARCHAR(100) PRIMARY KEY, applied_at DATETIME NOT NULL)"
+        ))
+        if conn.execute(
+            text("SELECT 1 FROM schema_migrations WHERE name = :name"),
+            {"name": migration_name},
+        ).first():
+            return {"already_applied": True}
+
+        for old_stage in range(7, 2, -1):
+            result = conn.execute(
+                text("UPDATE production_states SET stage = :new WHERE stage = :old"),
+                {"old": old_stage, "new": old_stage + 1},
+            )
+            moved_states += result.rowcount
+            result = conn.execute(
+                text("UPDATE approval_records SET stage = :new WHERE stage = :old"),
+                {"old": old_stage, "new": old_stage + 1},
+            )
+            moved_approvals += result.rowcount
+
+        rows = conn.execute(text(
+            "SELECT id, project_id, content_json, status, version, outdated, "
+            "approved_at, created_at, updated_at FROM production_states "
+            "WHERE stage = 1 AND episode_id IS NULL"
+        )).all()
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            try:
+                data = json.loads(row.content_json or "{}")
+            except json.JSONDecodeError:
+                data = {}
+            novel = data.pop("novel", None)
+            data.pop("analysis_truncated", None)
+            conn.execute(
+                text("UPDATE production_states SET content_json = :content WHERE id = :id"),
+                {"id": row.id, "content": json.dumps(data, ensure_ascii=False)},
+            )
+            if novel:
+                conn.execute(text(
+                    "INSERT INTO production_states (id, project_id, episode_id, stage, "
+                    "status, content_json, version, outdated, approved_at, created_at, updated_at) "
+                    "VALUES (:id, :project_id, NULL, 3, :status, :content, :version, "
+                    ":outdated, :approved_at, :created_at, :updated_at)"
+                ), {
+                    "id": f"state_{uuid.uuid4().hex[:12]}",
+                    "project_id": row.project_id,
+                    "status": row.status,
+                    "content": json.dumps({"novel": novel}, ensure_ascii=False),
+                    "version": row.version,
+                    "outdated": row.outdated,
+                    "approved_at": row.approved_at,
+                    "created_at": row.created_at,
+                    "updated_at": row.updated_at,
+                })
+                created_chapter_states += 1
+
+        conn.execute(text(
+            "UPDATE projects SET current_stage = current_stage + 1 WHERE current_stage >= 3"
+        ))
+        conn.execute(
+            text("INSERT INTO schema_migrations (name, applied_at) VALUES (:name, :now)"),
+            {"name": migration_name, "now": now},
+        )
+    return {
+        "already_applied": False,
+        "states_shifted": moved_states,
+        "approvals_shifted": moved_approvals,
+        "chapter_states_created": created_chapter_states,
+    }
