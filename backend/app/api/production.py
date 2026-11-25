@@ -197,6 +197,19 @@ async def generate_stage(project_id: str, stage: int, episode_id: str | None = N
     raise HTTPException(400, "该阶段没有 AI 生成操作")
 
 
+class AiReviseRequest(BaseModel):
+    instruction: str
+    scope: str = "plan"  # plan | event | episode
+    target_id: str | None = None
+
+
+@router.post("/projects/{project_id}/workflow/2/ai-revise")
+async def ai_revise_plan(project_id: str, data: AiReviseRequest, db: Session = Depends(get_db)):
+    return await production_service.ai_revise_plan(
+        db, project_id, data.instruction, data.scope, data.target_id
+    )
+
+
 @router.post("/projects/{project_id}/workflow/{stage}/review")
 async def review_stage(project_id: str, stage: int, episode_id: str | None = None, db: Session = Depends(get_db)):
     if stage in (4, 6):
@@ -214,9 +227,22 @@ async def extract_assets_from_scripts(project_id: str, db: Session = Depends(get
     return await production_service.extract_assets_from_scripts(db, project_id)
 
 
+class GenerateMissingRequest(BaseModel):
+    episode_id: str | None = None
+    target_ids: list[str] | None = None
+
+
+@router.get("/projects/{project_id}/assets/missing-report")
+def missing_report(project_id: str, episode_id: str | None = None, db: Session = Depends(get_db)):
+    return production_service.missing_asset_report(db, project_id, episode_id)
+
+
 @router.post("/projects/{project_id}/assets/generate-missing")
-def generate_missing_assets(project_id: str, db: Session = Depends(get_db)):
-    return production_service.generate_missing_asset_images(db, project_id)
+def generate_missing_assets(project_id: str, data: GenerateMissingRequest | None = None, db: Session = Depends(get_db)):
+    payload = data or GenerateMissingRequest()
+    return production_service.generate_missing_asset_images(
+        db, project_id, episode_id=payload.episode_id, target_ids=payload.target_ids,
+    )
 
 
 @router.get("/episodes/{episode_id}/storyboard-quality")

@@ -100,7 +100,8 @@ export const api = {
   deleteProp: (id) => req(`/props/${id}`, { method: "DELETE" }),
   generateProp: (id) => req(`/props/${id}/generate`, { method: "POST" }),
   extractAssetsFromScripts: (pid) => req(`/projects/${pid}/assets/extract-from-scripts`, { method: "POST" }),
-  generateMissingAssets: (pid) => req(`/projects/${pid}/assets/generate-missing`, { method: "POST" }),
+  missingAssetReport: (pid, episodeId) => req(`/projects/${pid}/assets/missing-report${episodeId ? `?episode_id=${episodeId}` : ""}`),
+  generateMissingAssets: (pid, data) => json("POST", `/projects/${pid}/assets/generate-missing`, data || {}),
   gallery: (eid) => req(`/episodes/${eid}/gallery`),
   listJobs: (pid, status) =>
     req(`/projects/${pid}/generation-jobs${status ? `?status=${status}` : ""}`),
@@ -136,6 +137,7 @@ export const api = {
     const fd = new FormData(); fd.append("file", file);
     return req(`/projects/${pid}/episode-plan/import`, { method: "POST", body: fd });
   },
+  aiRevisePlan: (pid, data) => json("POST", `/projects/${pid}/workflow/2/ai-revise`, data),
   revisions: (stateId) => req(`/production-states/${stateId}/revisions`),
   updateShotProduction: (sid, data) => json("PUT", `/shots/${sid}/production`, data),
   duplicateShot: (sid) => req(`/shots/${sid}/duplicate`, { method: "POST" }),

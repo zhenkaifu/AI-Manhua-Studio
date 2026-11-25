@@ -133,13 +133,29 @@ main_storyline 必须汇总文档中已有的故事走向。suggestions 只指�
 
 
 async def generate_episode_plan(db: Session, project_id: str) -> dict:
-    workflow_service.require_unlocked(db, project_id, 2)
+    # 重新生成只要求故事设定已有内容，不要求先重新审批：设定改动后用户可以立刻
+    # 看到对时间线的影响，审批门禁仍在「审批剧集规划」这一步把关。
     analysis = workflow_service.content(workflow_service.get_state(db, project_id, 1))
+    bible = analysis.get("story_bible")
+    if not isinstance(bible, dict) or not any(
+        str(value).strip() for value in bible.values() if isinstance(value, str)
+    ):
+        raise HTTPException(409, "请先填写故事设定草稿，再生成剧集规划")
+    existing = workflow_service.content(workflow_service.get_state(db, project_id, 2))
+    existing_events = existing.get("major_events") or []
+    existing_episodes = existing.get("episodes") or []
+    regenerating = bool(existing_events or existing_episodes)
     system = """你是中文短剧总策划。先从 Story Bible 提取贯穿全书的大事件与时间线，再据此规划 1-6 集漫剧，每集 60-180 秒。
 大事件是改变故事阶段、人物目标或世界局势的关键节点，不是每集的小冲突。
 只输出合法 JSON：{"major_events":[{"id":"event_1","time_order":1,"time_label":"故事开端/三个月后","title":"","description":"","cause":"","consequence":""}],"episodes":[{"episode_number":1,"title":"", "major_event_ids":["event_1"],"timeline_position":"","source_chapters":[],"main_plot":"","key_characters":[],"main_conflict":"","opening_hook":"","dramatic_highlights":[],"climax":"","cliffhanger":"","scene_requirements":[],"estimated_duration":90}]}
 每集必须关联大事件并明确所处时间线。此时小说章节可能尚未导入，source_chapters 保留为空数组。"""
-    prompt = "以下是用户已审批的创作资料，完整设定原文优先：\n" + json.dumps({"story_bible": analysis.get("story_bible"), "original_text": analysis.get("original_text", "")}, ensure_ascii=False)[:MAX_CONTEXT_CHARS] + "\n\n只输出 major_events 和 episodes，不要输出小事件流水账，不要虚构章节映射。"
+    if regenerating:
+        system += "\n用户已有确认或编辑过的大事件与剧集规划，本次因为 Story Bible 更新而重新提取：只调整新设定明确要求改变的内容；未提及的已有大事件必须原样保留（保留原 id），不得删除、改写或调换顺序；已有剧集同样只在必要时调整，新增事件使用新 id。"
+    prompt = "以下是用户的创作资料，完整设定原文优先：\n" + json.dumps({"story_bible": analysis.get("story_bible"), "original_text": analysis.get("original_text", "")}, ensure_ascii=False)[:MAX_CONTEXT_CHARS]
+    if regenerating:
+        prompt += "\n\n已有大事件时间线（必须原样保留未受新设定影响的部分）：\n" + json.dumps(existing_events, ensure_ascii=False)[:9000]
+        prompt += "\n\n已有剧集规划（未受影响的剧集保持原样）：\n" + json.dumps(existing_episodes, ensure_ascii=False)[:14000]
+    prompt += "\n\n只输出 major_events 和 episodes，不要输出小事件流水账，不要虚构章节映射。"
     workflow_service.set_status(db, project_id, 2, "AI_GENERATING")
     try:
         result = await get_llm_provider().generate_json(system, prompt)
@@ -149,12 +165,35 @@ async def generate_episode_plan(db: Session, project_id: str) -> dict:
         major_events = result.get("major_events") or []
         if not isinstance(major_events, list) or not major_events:
             raise ValueError("模型没有返回 major_events 大事件时间线，请重试")
+        if regenerating:
+            # 模型仍可能遗漏用户已确认的内容：按 id / 集数把被漏掉的旧内容补回来。
+            returned_ids = {str(event.get("id", "")) for event in major_events}
+            major_events.extend(
+                event for event in existing_events
+                if str(event.get("id", "")) and str(event.get("id", "")) not in returned_ids
+            )
+            returned_numbers = set()
+            for item in episodes:
+                try:
+                    returned_numbers.add(int(item.get("episode_number", 0)))
+                except (TypeError, ValueError):
+                    continue
+            def _number(item):
+                try:
+                    return int(item.get("episode_number", 0) or 0)
+                except (TypeError, ValueError):
+                    return 0
+            episodes.extend(
+                item for item in existing_episodes
+                if _number(item) not in returned_numbers and _number(item) > 0
+            )
+            episodes.sort(key=_number)
         for index, event in enumerate(major_events, 1):
             event["id"] = event.get("id") or f"event_{index}"
             event["time_order"] = index
         result = {"major_events": major_events, "episodes": episodes}
         sync_plan_episodes(db, project_id, result)
-        return workflow_service.save_content(db, project_id, 2, result, note="AI 剧集规划", review_required=True)
+        return workflow_service.save_content(db, project_id, 2, result, note="AI 剧集规划（保留已确认内容）" if regenerating else "AI 剧集规划", review_required=True)
     except Exception as exc:
         workflow_service.set_status(db, project_id, 2, "FAILED")
         raise HTTPException(502, f"剧集规划失败：{exc}")
@@ -188,6 +227,137 @@ async def import_major_events_document(db: Session, project_id: str, filename: s
     except Exception as exc:
         workflow_service.set_status(db, project_id, 2, "FAILED")
         raise HTTPException(502, f"大事件文档整理失败：{exc}")
+
+
+async def ai_revise_plan(db: Session, project_id: str, instruction: str, scope: str = "plan", target_id: str | None = None) -> dict:
+    """AI 协助增量修改剧集规划：只改用户要求的部分，未提及内容原样保留。
+
+    scope="event"   只修改 id == target_id 的大事件（按 id 合并替换，其余事件不动）
+    scope="episode" 只修改 episode_number == int(target_id) 的剧集（按集数合并替换）
+    scope="plan"    整盘调整：LLM 返回完整规划，代码按 id/集数把被漏掉的旧内容补回
+    """
+    workflow_service.require_unlocked(db, project_id, 2)
+    instruction = (instruction or "").strip()
+    if not instruction:
+        raise HTTPException(422, "请先写下修改要求")
+    state = workflow_service.get_state(db, project_id, 2)
+    current = workflow_service.content(state)
+    events = list(current.get("major_events") or [])
+    episodes = list(current.get("episodes") or [])
+    if not events and not episodes:
+        raise HTTPException(409, "还没有剧集规划，请先生成规划再做修改")
+    analysis = workflow_service.content(workflow_service.get_state(db, project_id, 1))
+    bible_context = json.dumps(
+        {"story_bible": analysis.get("story_bible"), "original_text": analysis.get("original_text", "")},
+        ensure_ascii=False,
+    )[:MAX_CONTEXT_CHARS]
+    workflow_service.set_status(db, project_id, 2, "AI_GENERATING")
+
+    keep_rule = "只输出被修改对象的完整 JSON，未提及的字段必须原样保留，不要改 id，不要新增或删除其他内容。"
+
+    try:
+        if scope == "event":
+            target = next((e for e in events if str(e.get("id")) == str(target_id)), None)
+            if not target:
+                raise HTTPException(404, "没有找到要修改的大事件")
+            system = """你是中文短剧总策划。用户要求修改一个大事件。请结合 Story Bible 与用户要求输出该事件修改后的完整版本。
+""" + keep_rule + """
+只输出 JSON：{"event":{"id":"保持原 id","time_order":保持原值,"time_label":"","title":"","description":"","cause":"","consequence":""}}"""
+            prompt = json.dumps({
+                "修改要求": instruction,
+                "目标事件": target,
+                "其他事件（仅供理解上下文，不要修改）": [
+                    {"id": e.get("id"), "title": e.get("title")} for e in events if e is not target
+                ],
+                "story_context": bible_context,
+            }, ensure_ascii=False)[:MAX_CONTEXT_CHARS]
+            result = await get_llm_provider().generate_json(system, prompt)
+            revised = result.get("event") or result
+            if not isinstance(revised, dict) or not revised.get("title"):
+                raise ValueError("模型没有返回修改后的大事件，请重试")
+            merged = {**target, **{k: v for k, v in revised.items() if v not in (None, "", [])}}
+            merged["id"] = target.get("id")
+            merged["time_order"] = target.get("time_order")
+            events = [merged if e is target else e for e in events]
+            payload = {**current, "major_events": events}
+            return workflow_service.save_content(db, project_id, 2, payload, note=f"AI 修改大事件：{instruction[:40]}", review_required=True)
+
+        if scope == "episode":
+            try:
+                number = int(target_id)
+            except (TypeError, ValueError):
+                raise HTTPException(422, "目标剧集编号无效")
+            target = next((ep for ep in episodes if int(ep.get("episode_number", 0) or 0) == number), None)
+            if not target:
+                raise HTTPException(404, "没有找到要修改的剧集")
+            system = """你是中文短剧总策划。用户要求修改一集的规划。请结合 Story Bible、大事件时间线与用户要求输出该集修改后的完整版本。
+""" + keep_rule + """
+只输出 JSON：{"episode":{完整单集结构，包含 episode_number、title、major_event_ids、timeline_position、source_chapters、main_plot、key_characters、main_conflict、opening_hook、dramatic_highlights、climax、cliffhanger、scene_requirements、estimated_duration}}"""
+            prompt = json.dumps({
+                "修改要求": instruction,
+                "目标剧集": target,
+                "大事件时间线（仅供理解上下文）": [
+                    {"id": e.get("id"), "title": e.get("title"), "time_label": e.get("time_label")} for e in events
+                ],
+                "其他剧集（仅供理解上下文，不要修改）": [
+                    {"episode_number": ep.get("episode_number"), "title": ep.get("title")}
+                    for ep in episodes if ep is not target
+                ],
+                "story_context": bible_context,
+            }, ensure_ascii=False)[:MAX_CONTEXT_CHARS]
+            result = await get_llm_provider().generate_json(system, prompt)
+            revised = result.get("episode") or result
+            if not isinstance(revised, dict) or not revised.get("title"):
+                raise ValueError("模型没有返回修改后的剧集，请重试")
+            merged = {**target, **{k: v for k, v in revised.items() if v not in (None, "", [])}}
+            merged["episode_number"] = number
+            if target.get("id"):
+                merged["id"] = target["id"]
+            episodes = [merged if ep is target else ep for ep in episodes]
+            payload = {**current, "episodes": episodes}
+            sync_plan_episodes(db, project_id, payload)
+            return workflow_service.save_content(db, project_id, 2, payload, note=f"AI 修改第 {number} 集：{instruction[:40]}", review_required=True)
+
+        # scope == "plan"：整盘增量调整
+        system = """你是中文短剧总策划。用户要求对整盘剧集规划做增量调整。请结合 Story Bible 输出调整后的完整规划。
+严格要求：用户未要求修改的大事件与剧集必须原样保留（保留原 id、原 episode_number）；不得无故删除、改写或调换顺序；新增事件使用新 id。
+只输出 JSON：{"major_events":[...],"episodes":[...]}，结构与输入完全一致。"""
+        prompt = json.dumps({
+            "修改要求": instruction,
+            "当前大事件": events,
+            "当前剧集": episodes,
+            "story_context": bible_context,
+        }, ensure_ascii=False)[:MAX_CONTEXT_CHARS]
+        result = await get_llm_provider().generate_json(system, prompt)
+        new_events = result.get("major_events")
+        new_episodes = result.get("episodes")
+        if not isinstance(new_events, list) or not isinstance(new_episodes, list):
+            raise ValueError("模型没有返回完整的 major_events 与 episodes，请重试")
+        # 按 id / 集数把被漏掉的旧内容补回来，防止 LLM 丢内容。
+        returned_ids = {str(e.get("id", "")) for e in new_events}
+        new_events.extend(e for e in events if str(e.get("id", "")) and str(e.get("id", "")) not in returned_ids)
+
+        def _number(item):
+            try:
+                return int(item.get("episode_number", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        returned_numbers = {_number(ep) for ep in new_episodes}
+        new_episodes.extend(ep for ep in episodes if _number(ep) > 0 and _number(ep) not in returned_numbers)
+        new_episodes.sort(key=_number)
+        for index, event in enumerate(new_events, 1):
+            event["id"] = event.get("id") or f"event_{uuid.uuid4().hex[:10]}"
+            event["time_order"] = index
+        payload = {**current, "major_events": new_events, "episodes": new_episodes}
+        sync_plan_episodes(db, project_id, payload)
+        return workflow_service.save_content(db, project_id, 2, payload, note=f"AI 协助调整规划：{instruction[:40]}", review_required=True)
+    except HTTPException:
+        workflow_service.set_status(db, project_id, 2, "FAILED")
+        raise
+    except Exception as exc:
+        workflow_service.set_status(db, project_id, 2, "FAILED")
+        raise HTTPException(502, f"AI 协助修改失败：{exc}")
 
 
 def sync_plan_episodes(db: Session, project_id: str, plan: dict):
@@ -462,12 +632,113 @@ async def extract_assets_from_scripts(db: Session, project_id: str) -> dict:
     return workflow_service.save_content(db, project_id, 5, payload, note="从已审批剧本提取资产", review_required=True)
 
 
-def generate_missing_asset_images(db: Session, project_id: str) -> dict:
+def _approved_script_index(db: Session, project_id: str) -> list[dict]:
+    """已审批单集剧本的检索索引：episode 信息 + 全文文本，供资产归属集匹配。"""
+    states = db.query(ProductionState).filter(
+        ProductionState.project_id == project_id,
+        ProductionState.stage == 4,
+        ProductionState.episode_id.is_not(None),
+        ProductionState.status == "APPROVED",
+    ).all()
+    episodes = {e.id: e for e in db.query(Episode).filter(Episode.project_id == project_id).all()}
+    rows = []
+    for state in states:
+        episode = episodes.get(state.episode_id)
+        rows.append({
+            "episode_id": state.episode_id,
+            "episode_number": episode.episode_number if episode else None,
+            "episode_title": episode.title if episode else "",
+            "text": json.dumps(workflow_service.content(state), ensure_ascii=False),
+        })
+    rows.sort(key=lambda row: (row["episode_number"] or 0))
+    return rows
+
+
+def _entity_episode_usage(entity, scripts: list[dict]) -> list[dict]:
+    """根据名称与别名在剧本全文中匹配，得到该资产被哪些集使用（仅用于归属展示）。"""
+    try:
+        aliases = json.loads(getattr(entity, "aliases", None) or "[]")
+    except (TypeError, ValueError):
+        aliases = []
+    needles = [str(name).strip() for name in [entity.name, *aliases] if str(name).strip()]
+    needles = [name for name in needles if len(name) >= 2]
+    if not needles:
+        return []
+    usage = []
+    for script in scripts:
+        if any(name in script["text"] for name in needles):
+            usage.append({
+                "episode_id": script["episode_id"],
+                "episode_number": script["episode_number"],
+                "episode_title": script["episode_title"],
+            })
+    return usage
+
+
+def _pending_entity_jobs(db: Session, project_id: str) -> set[tuple[str, str]]:
+    rows = db.query(GenerationJob).filter(
+        GenerationJob.project_id == project_id,
+        GenerationJob.status.in_(["pending", "running"]),
+    ).all()
+    return {(row.target_type, row.target_id) for row in rows if row.target_id}
+
+
+def missing_asset_report(db: Session, project_id: str, episode_id: str | None = None) -> dict:
+    """先看清现状再生成：统计现有资产、缺参考图的资产及其所属集、每集缺失汇总。"""
+    workflow_service.get_project(db, project_id)
+    scripts = _approved_script_index(db, project_id)
+    if episode_id:
+        scripts = [row for row in scripts if row["episode_id"] == episode_id]
+    queued = _pending_entity_jobs(db, project_id)
+    entities = []
+    counts = {"character": {"total": 0, "ready": 0}, "scene": {"total": 0, "ready": 0}, "prop": {"total": 0, "ready": 0}}
+    for kind, model in (("character", Character), ("scene", Scene), ("prop", Prop)):
+        for entity in db.query(model).filter(model.project_id == project_id).order_by(model.created_at).all():
+            counts[kind]["total"] += 1
+            has_reference = bool(entity.reference_asset_id)
+            if has_reference:
+                counts[kind]["ready"] += 1
+            entities.append({
+                "id": entity.id, "kind": kind, "name": entity.name,
+                "has_reference": has_reference,
+                "queued": (kind, entity.id) in queued,
+                "episodes": _entity_episode_usage(entity, scripts),
+            })
+    missing = [item for item in entities if not item["has_reference"] and not item["queued"]]
+    episode_breakdown = {}
+    for item in missing:
+        for usage in item["episodes"]:
+            key = usage["episode_id"]
+            bucket = episode_breakdown.setdefault(key, {
+                "episode_id": key, "episode_number": usage["episode_number"],
+                "episode_title": usage["episode_title"], "missing_count": 0,
+            })
+            bucket["missing_count"] += 1
+    return {
+        "counts": counts,
+        "ready_total": sum(c["ready"] for c in counts.values()),
+        "missing_total": len(missing),
+        "missing": missing,
+        "episode_breakdown": sorted(
+            episode_breakdown.values(), key=lambda row: (row["episode_number"] or 0)
+        ),
+        "scripts_approved": len(scripts),
+        "scope_episode_id": episode_id,
+    }
+
+
+def generate_missing_asset_images(db: Session, project_id: str, episode_id: str | None = None, target_ids: list[str] | None = None) -> dict:
     workflow_service.require_unlocked(db, project_id, 5)
     from app.services import image_generation_service
     targets = [("character", c) for c in db.query(Character).filter(Character.project_id == project_id, Character.reference_asset_id.is_(None)).all()]
     targets += [("scene", s) for s in db.query(Scene).filter(Scene.project_id == project_id, Scene.reference_asset_id.is_(None)).all()]
     targets += [("prop", p) for p in db.query(Prop).filter(Prop.project_id == project_id, Prop.reference_asset_id.is_(None)).all()]
+    if target_ids is not None:
+        wanted = set(target_ids)
+        targets = [(kind, entity) for kind, entity in targets if entity.id in wanted]
+    if episode_id:
+        scripts = [row for row in _approved_script_index(db, project_id) if row["episode_id"] == episode_id]
+        targets = [(kind, entity) for kind, entity in targets if _entity_episode_usage(entity, scripts)]
     jobs = []
     for kind, entity in targets:
         try:
@@ -475,7 +746,12 @@ def generate_missing_asset_images(db: Session, project_id: str) -> dict:
         except HTTPException as exc:
             if exc.status_code != 409:
                 raise
-    return {"created": len(jobs), "jobs": jobs, "message": f"已把 {len(jobs)} 个缺失参考图加入生成队列" if jobs else "所有资产已有参考图或正在生成"}
+    scope_note = ""
+    if episode_id:
+        episode = db.query(Episode).filter(Episode.id == episode_id).first()
+        if episode:
+            scope_note = f"（第 {episode.episode_number} 集范围）"
+    return {"created": len(jobs), "jobs": jobs, "message": f"已把 {len(jobs)} 个缺失参考图加入生成队列{scope_note}" if jobs else "所选范围内所有资产已有参考图或正在生成"}
 
 
 def asset_quality(db: Session, project_id: str) -> dict:
